@@ -144,8 +144,10 @@ func payloadHandlerCreate(res ipamIPAvailableIpsCreateCreated) (int64, string, e
 
 func resourceNetboxAvailableIPAddressCreate(d *schema.ResourceData, m interface{}) error {
 	api := m.(*client.NetBoxAPI)
+	var isPrefix bool
+	var iDs []int64
 	var selectedID int64
-	var err error
+	var res ipamIPAvailableIpsCreateCreated
 
 	vrfID := int64(d.Get("vrf_id").(int))
 	nestedvrf := models.NestedVRF{
@@ -155,55 +157,51 @@ func resourceNetboxAvailableIPAddressCreate(d *schema.ResourceData, m interface{
 		Vrf: &nestedvrf,
 	}
 
-	var res ipamIPAvailableIpsCreateCreated
-	if prefixID := int64(d.Get("prefix_id").(int)); prefixID != 0 {
-		params := ipam.NewIpamPrefixesAvailableIpsCreateParams().WithID(prefixID).WithData([]*models.AvailableIP{&data})
-		res, err = api.Ipam.IpamPrefixesAvailableIpsCreate(params, nil)
-		if err != nil {
-			return fmt.Errorf("unable to create a ip address for prefix: %v, err: %w", prefixID, err)
-		}
-		selectedID = prefixID
-	}
-	if rangeID := int64(d.Get("ip_range_id").(int)); rangeID != 0 {
-		selectedID = rangeID
-		params := ipam.NewIpamIPRangesAvailableIpsCreateParams().WithID(rangeID).WithData([]*models.AvailableIP{&data})
-		res, err = api.Ipam.IpamIPRangesAvailableIpsCreate(params, nil)
-		if err != nil {
-			return fmt.Errorf("unable to create a ip address for ip Range: %v, err: %w", rangeID, err)
-		}
-	}
-	if prefixIDs, err := assertInterfaceToInt64Slice(d.Get("prefix_ids")); err == nil && len(prefixIDs) > 0 {
-
-		for _, selectedID := range prefixIDs {
-			// q: Ask for forgivnes or check first?
-			params := ipam.NewIpamPrefixesAvailableIpsCreateParams().WithID(selectedID).WithData([]*models.AvailableIP{&data})
-			res, err = api.Ipam.IpamPrefixesAvailableIpsCreate(params, nil)
-			if err == nil {
-				// There is avalible ips
-				break
-			}
-		}
-		if err != nil {
-			return fmt.Errorf("unable to create a ip address for prefixes: %v, err: %w", prefixIDs, err)
-		}
-	} else if err != nil {
+	prefixID := int64(d.Get("prefix_id").(int))
+	prefixIDs, err := assertInterfaceToInt64Slice(d.Get("prefix_ids"))
+	if err != nil {
 		return fmt.Errorf("unable to convert prefixIDs to []int64: %w", err)
 	}
-	if rangeIDs, err := assertInterfaceToInt64Slice(d.Get("ip_range_ids")); err == nil && len(rangeIDs) > 0 {
-		// Try Ranges until one does not return an error
-		for _, selectedID = range rangeIDs {
+	rangeID := int64(d.Get("ip_range_id").(int))
+	rangeIDs, err := assertInterfaceToInt64Slice(d.Get("ip_range_ids"))
+	if err != nil {
+		return fmt.Errorf("unable to convert rangeIDs to []int64: %w", err)
+	}
+
+	switch {
+	case prefixID != 0:
+		iDs = []int64{prefixID}
+		isPrefix = true
+	case len(prefixIDs) > 0:
+		iDs = prefixIDs
+		isPrefix = true
+	case rangeID != 0:
+		iDs = []int64{rangeID}
+		isPrefix = false
+	case len(rangeIDs) > 0:
+		iDs = rangeIDs
+		isPrefix = false
+	default:
+		return fmt.Errorf("no prefix_id or ip_range_id provided")
+	}
+
+	for _, selectedID = range iDs {
+		if isPrefix {
+			params := ipam.NewIpamPrefixesAvailableIpsCreateParams().WithID(selectedID).WithData([]*models.AvailableIP{&data})
+			res, err = api.Ipam.IpamPrefixesAvailableIpsCreate(params, nil)
+		} else {
 			params := ipam.NewIpamIPRangesAvailableIpsCreateParams().WithID(selectedID).WithData([]*models.AvailableIP{&data})
 			res, err = api.Ipam.IpamIPRangesAvailableIpsCreate(params, nil)
-			if err == nil {
-				// There is avalible ips
-				break
-			}
 		}
-		if err != nil {
-			return fmt.Errorf("unable to create a ip address for ip Ranges: %v, err: %w", rangeIDs, err)
+		if err == nil {
+			// There is avalible ips
+			break
 		}
-	} else if err != nil {
-		return fmt.Errorf("unable to convert rangeIDs to []int64: %w", err)
+	}
+	if err != nil {
+		return fmt.Errorf(
+			"unable to create a ip address for id: %d, isPrefix %t, err: %w", selectedID, isPrefix, err,
+		)
 	}
 	netboxID, ipaddress, err := payloadHandlerCreate(res)
 	if err != nil {
